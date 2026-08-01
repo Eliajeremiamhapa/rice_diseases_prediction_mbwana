@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)  # Inaruhusu Mobile App na Web Clients kufanya maombi bila vizuizi vya CORS
+CORS(app)
 
 # Configure Upload Folder
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,7 +14,7 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Model Path (Imewekwa kusoma fayili ya ONNX iliyopo kwenye root ya project kwenye Render)
+# Model Path
 MODEL_PATH = os.path.join(BASE_DIR, "best_rice_disease_prediction.onnx")
 
 # Load ONNX Model Session
@@ -64,26 +64,25 @@ def index():
     try:
         return render_template('index.html')
     except Exception:
-        # Kama index.html haipo au inatumiwa kama API tu
         return jsonify({
             'status': 'online',
             'model_loaded': session is not None,
             'message': 'Rice Disease Detection API is running!'
         }), 200
 
-# Endpoint ya kuzuia server isilale (Tumia hii kwenye UptimeRobot au Cron Job)
+# Ping endpoint kuzuia server isilale
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({
         'status': 'alive',
-        'model_loaded': session is not None,
-        'message': 'Server active'
+        'model_loaded': session is not None
     }), 200
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    # Angalia kama picha imetumwa
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        return jsonify({'error': 'No file uploaded. Hakikisha key name ni "file"'}), 400
 
     file = request.files['file']
     if file.filename == '':
@@ -94,13 +93,17 @@ def predict():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         file.save(filepath)
 
+        # Hakikisha fayili ipo na ina ukubwa (haijaharibika wakati wa ku-upload)
+        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+            return jsonify({'error': 'Picha haijafika vizuri kwenye server (Empty file)'}), 400
+
         if session is None:
             return jsonify({'error': 'ONNX Model session is not loaded'}), 500
 
-        # Preprocess Image using PIL
+        # Preprocess Image using PIL (LOGIC YAKO ILEILE YA LOCAL)
         processed_img = preprocess_image(filepath)
 
-        # Run ONNX Inference
+        # Run ONNX Inference (LOGIC YAKO ILEILE YA LOCAL)
         outputs = session.run([output_name], {input_name: processed_img})
         predictions = outputs[0][0]
 
@@ -109,7 +112,7 @@ def predict():
         predicted_class = CLASS_NAMES[predicted_class_idx]
         confidence = float(predictions[predicted_class_idx]) * 100
 
-        # Futa fayili iliyohifadhiwa ili kuzuia diski ya Render kujaa
+        # Safisha picha iliyohifadhiwa
         if os.path.exists(filepath):
             os.remove(filepath)
 
@@ -120,9 +123,9 @@ def predict():
         })
 
     except Exception as e:
+        print(f"Error wakati wa prediction: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Usanidi unaotakiwa na Render ili kupokea requests za mtandaoni
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
