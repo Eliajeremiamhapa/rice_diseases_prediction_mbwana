@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Inaruhusu App na Frontend za nje kuwasiliana na Flask
 
 # Configure Upload Folder
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,7 +14,7 @@ UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Model Path
+# Model Path ya Render (Ipo kwenye root directory)
 MODEL_PATH = os.path.join(BASE_DIR, "best_rice_disease_prediction.onnx")
 
 # Load ONNX Model Session
@@ -70,7 +70,7 @@ def index():
             'message': 'Rice Disease Detection API is running!'
         }), 200
 
-# Ping endpoint kuzuia server isilale
+# Route ya kuzuia seva isilale (UptimeRobot / Cron Job)
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({
@@ -80,9 +80,8 @@ def ping():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    # Angalia kama picha imetumwa
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded. Hakikisha key name ni "file"'}), 400
+        return jsonify({'error': 'No file uploaded'}), 400
 
     file = request.files['file']
     if file.filename == '':
@@ -93,17 +92,13 @@ def predict():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         file.save(filepath)
 
-        # Hakikisha fayili ipo na ina ukubwa (haijaharibika wakati wa ku-upload)
-        if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
-            return jsonify({'error': 'Picha haijafika vizuri kwenye server (Empty file)'}), 400
-
         if session is None:
             return jsonify({'error': 'ONNX Model session is not loaded'}), 500
 
-        # Preprocess Image using PIL (LOGIC YAKO ILEILE YA LOCAL)
+        # Preprocess Image using PIL
         processed_img = preprocess_image(filepath)
 
-        # Run ONNX Inference (LOGIC YAKO ILEILE YA LOCAL)
+        # Run ONNX Inference
         outputs = session.run([output_name], {input_name: processed_img})
         predictions = outputs[0][0]
 
@@ -112,10 +107,6 @@ def predict():
         predicted_class = CLASS_NAMES[predicted_class_idx]
         confidence = float(predictions[predicted_class_idx]) * 100
 
-        # Safisha picha iliyohifadhiwa
-        if os.path.exists(filepath):
-            os.remove(filepath)
-
         return jsonify({
             'class': predicted_class,
             'confidence': f"{confidence:.2f}%",
@@ -123,7 +114,6 @@ def predict():
         })
 
     except Exception as e:
-        print(f"Error wakati wa prediction: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
