@@ -1,6 +1,5 @@
 import os
 import io
-import urllib.request
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
@@ -8,53 +7,34 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Wezesha CORS kwa ajili ya mobile apps na web clients
 
-# Path ya Model kwenye server
+# Njia salama ya kupata Path ya Model kutoka Root Directory
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "rice_model_best.onnx")
 
-# -----------------------------------------------------------------------------
-# DIRECT DOWNLOAD URL: 
-# Weka link ya direct download ya model yako hapa (mfano: Hugging Face, GitHub Release, au Drive Direct Link).
-# Unaweza pia kuiweka kwenye Render Environment Variables kama MODEL_URL.
-# -----------------------------------------------------------------------------
-DEFAULT_MODEL_URL = "https://huggingface.co/datasets/Mbwana/rice-disease-model/resolve/main/rice_model_best.onnx"
-MODEL_URL = os.environ.get("MODEL_URL", DEFAULT_MODEL_URL)
+# JINA HALISI LA MODEL KAMA LILIVYO KWENYE GITHUB YAKO:
+MODEL_PATH = os.path.join(BASE_DIR, "best_rice_disease_prediction.onnx")
 
-def ensure_model_exists():
-    """Inakagua kama fayili ya model ipo, kama haipo inapakua kiotomatiki."""
-    if not os.path.exists(MODEL_PATH):
-        print(f"⚠️ Fayili ya model haijapatikana kwenye: {MODEL_PATH}")
-        print(f"⏳ Inapakua model kutoka mtandaoni: {MODEL_URL} ...")
-        try:
-            # Pakua model na ihifadhi kwenye MODEL_PATH
-            urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
-            print("✅ Model imefanikiwa kupakuliwa na kuhifadhiwa!")
-        except Exception as e:
-            print(f"❌ Imefeli kupakua model kutoka URL: {e}")
-
-# Hakikisha model ipo kabla ya kuanza InferenceSession
-ensure_model_exists()
-
-# Initialize ONNX Model Session
+# Jaribu ku-load ONNX Model Session
 session = None
 input_name = None
 output_name = None
+
+print(f"🔍 Inatafuta model kwenye path: {MODEL_PATH}")
 
 if os.path.exists(MODEL_PATH):
     try:
         session = ort.InferenceSession(MODEL_PATH)
         input_name = session.get_inputs()[0].name
         output_name = session.get_outputs()[0].name
-        print(f"✅ ONNX Model successfully loaded from: {MODEL_PATH}")
+        print(f"✅ ONNX Model imefanikiwa kupakizwa kutoka: {MODEL_PATH}")
     except Exception as e:
-        print(f"❌ Error loading ONNX model session: {e}")
-        session = None
+        print(f"❌ Error wakati wa ku-load ONNX model: {str(e)}")
 else:
-    print(f"❌ Error: Model file still not found at {MODEL_PATH}")
+    print(f"❌ Error: Fayili ya Model '{MODEL_PATH}' haijapatikana.")
+    print("Fayili zilizopo kwenye folder hili la server:", os.listdir(BASE_DIR))
 
-# Class Names in exact training order
+# Class Names kwa mpangilio wa mafunzo ya model
 CLASS_NAMES = [
     'Bacterial Leaf Blight',
     'Brown Spot',
@@ -65,9 +45,7 @@ CLASS_NAMES = [
 ]
 
 def preprocess_image(image_bytes):
-    """
-    Soma picha kutoka kwenye Bytes stream moja kwa moja bila kuihifadhi kwenye diski.
-    """
+    """Soma picha kutoka memory (bytes) na iandae kwa ajili ya model"""
     img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
     img = img.resize((224, 224), Image.Resampling.BILINEAR)
     img_array = np.array(img, dtype=np.float32)
@@ -82,49 +60,41 @@ def index():
         'message': 'Rice Disease Detection API is running!'
     }), 200
 
-# -------------------------------------------------------------
-# 1. ENDPOINT YA KUGONGA SERVER ISILALE (Keep-Alive Ping)
-# -------------------------------------------------------------
+# Endpoint ya kuzuia server isilale (Ping)
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({
         'status': 'alive',
-        'model_loaded': session is not None,
-        'message': 'Server is active'
+        'model_loaded': session is not None
     }), 200
 
-# -------------------------------------------------------------
-# 2. ENDPOINT YA PREDICTION KWA AJILI YA MOBILE APP & WEB
-# -------------------------------------------------------------
+# Endpoint ya kufanya prediction
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
-        return jsonify({'error': 'No file uploaded'}), 400
+        return jsonify({'error': 'Hakuna picha iliyochaguliwa'}), 400
 
     file = request.files['file']
     if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': 'Jina la picha halijapatikana'}), 400
+
+    if session is None:
+        return jsonify({
+            'error': 'ONNX Model session is not loaded on server. Hakikisha fayili ipo kwenye root folder.'
+        }), 500
 
     try:
-        if session is None:
-            return jsonify({
-                'error': 'ONNX Model session is not loaded on server. Check server logs.'
-            }), 500
-
-        # Read image in memory
         image_bytes = file.read()
         processed_img = preprocess_image(image_bytes)
 
-        # Run ONNX Inference
+        # Endesha ONNX Model Inference
         outputs = session.run([output_name], {input_name: processed_img})
         predictions = outputs[0][0]
 
-        # Get class index and confidence score
         predicted_class_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[predicted_class_idx]
         confidence = float(predictions[predicted_class_idx]) * 100
 
-        # Jibu linalorudi kwenye Mobile App au Web Client (JSON)
         return jsonify({
             'success': True,
             'class': predicted_class,
