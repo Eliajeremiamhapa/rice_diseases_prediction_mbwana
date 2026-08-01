@@ -1,18 +1,16 @@
 import os
+import io
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify
+from flask_cors import CORS  # 1. Tumeweka Import ya CORS hapa
 
 app = Flask(__name__)
+CORS(app)  # 2. Tumewezesha CORS kwa njia zote (Endpoints zote zitakubali requests)
 
-# Configure Upload Folder
-UPLOAD_FOLDER = os.path.join('static', 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Model Path
-MODEL_PATH = r"D:\FLASK2\rice_model_best.onnx"
+# Model Path - Weka fayili ya model kwenye root folder ya mradi wako
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "rice_model_best.onnx")
 
 # Load ONNX Model Session
 try:
@@ -34,32 +32,33 @@ CLASS_NAMES = [
     'Sheath Blight'
 ]
 
-def preprocess_image(image_path):
+def preprocess_image(image_bytes):
     """
-    Preprocess image using PIL (Pillow) to match Keras load_img perfectly:
-    1. Open image and ensure RGB mode
-    2. Resize using nearest/bicubic interpolation to (224, 224)
-    3. Convert to float32 raw array [0.0, 255.0]
-    4. Expand dimensions -> (1, 224, 224, 3)
+    Soma picha kutoka kwenye Bytes stream moja kwa moja bila kuihifadhi kwenye diski.
     """
-    # Open image using PIL (exactly like Keras load_img)
-    img = Image.open(image_path).convert('RGB')
-    
-    # Resize with Bilinear/Bicubic matching Keras default
+    img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
     img = img.resize((224, 224), Image.Resampling.BILINEAR)
-    
-    # Convert to NumPy float32
     img_array = np.array(img, dtype=np.float32)
-    
-    # Add batch dimension -> Shape: (1, 224, 224, 3)
     img_array = np.expand_dims(img_array, axis=0)
-    
     return img_array
 
 @app.route('/', methods=['GET'])
 def index():
-    return render_template('index.html')
+    return jsonify({
+        'status': 'online',
+        'message': 'Rice Disease Detection API is running!'
+    }), 200
 
+# -------------------------------------------------------------
+# 1. ENDPOINT YA KUGONGA SERVER ISILALE (Keep-Alive Ping)
+# -------------------------------------------------------------
+@app.route('/ping', methods=['GET'])
+def ping():
+    return jsonify({'status': 'alive', 'message': 'Server is active'}), 200
+
+# -------------------------------------------------------------
+# 2. ENDPOINT YA PREDICTION KWA AJILI YA MOBILE APP
+# -------------------------------------------------------------
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
@@ -70,15 +69,12 @@ def predict():
         return jsonify({'error': 'No file selected'}), 400
 
     try:
-        # Save uploaded file
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(filepath)
-
         if session is None:
-            return jsonify({'error': 'ONNX Model session is not loaded'}), 500
+            return jsonify({'error': 'ONNX Model session is not loaded on server'}), 500
 
-        # Preprocess Image using PIL
-        processed_img = preprocess_image(filepath)
+        # Read image in memory
+        image_bytes = file.read()
+        processed_img = preprocess_image(image_bytes)
 
         # Run ONNX Inference
         outputs = session.run([output_name], {input_name: processed_img})
@@ -89,14 +85,18 @@ def predict():
         predicted_class = CLASS_NAMES[predicted_class_idx]
         confidence = float(predictions[predicted_class_idx]) * 100
 
+        # Jibu linalorudi kwenye Mobile App (JSON)
         return jsonify({
+            'success': True,
             'class': predicted_class,
             'confidence': f"{confidence:.2f}%",
-            'image_path': f"/static/uploads/{file.filename}"
-        })
+            'confidence_raw': float(predictions[predicted_class_idx])
+        }), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e), 'success': False}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    # Render inatumia PORT environment variable
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
