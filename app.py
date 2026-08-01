@@ -2,38 +2,30 @@ import os
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
-from flask import Flask, request, jsonify
+from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # Inaruhusu Mobile App na Web Clients kufanya maombi bila vizuizi vya CORS
 
-# Configure Upload Folder (Local disk storage kama kwenye kodi yako ya local)
-UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+# Configure Upload Folder
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Model Path kwenye Render Root
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Model Path (Imewekwa kusoma fayili ya ONNX iliyopo kwenye root ya project kwenye Render)
 MODEL_PATH = os.path.join(BASE_DIR, "best_rice_disease_prediction.onnx")
 
 # Load ONNX Model Session
-session = None
-input_name = None
-output_name = None
-
-print(f"🔍 Inatafuta model kwenye path: {MODEL_PATH}")
-
-if os.path.exists(MODEL_PATH):
-    try:
-        session = ort.InferenceSession(MODEL_PATH)
-        input_name = session.get_inputs()[0].name
-        output_name = session.get_outputs()[0].name
-        print(f"✅ ONNX Model imefanikiwa kupakizwa kutoka: {MODEL_PATH}")
-    except Exception as e:
-        print(f"❌ Error wakati wa ku-load ONNX model: {str(e)}")
-else:
-    print(f"❌ Error: Fayili ya Model '{MODEL_PATH}' haijapatikana.")
+try:
+    session = ort.InferenceSession(MODEL_PATH)
+    input_name = session.get_inputs()[0].name
+    output_name = session.get_outputs()[0].name
+    print(f"✅ ONNX Model successfully loaded from: {MODEL_PATH}")
+except Exception as e:
+    print(f"❌ Error loading ONNX model: {e}")
+    session = None
 
 # Class Names in exact training order
 CLASS_NAMES = [
@@ -45,13 +37,6 @@ CLASS_NAMES = [
     'Sheath Blight'
 ]
 
-def softmax(x):
-    """
-    Inabadilisha Raw Logits kutoka ONNX kuwa Probabilities halisi za (0% - 100%)
-    """
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum(axis=0)
-
 def preprocess_image(image_path):
     """
     Preprocess image using PIL (Pillow) to match Keras load_img perfectly:
@@ -60,26 +45,39 @@ def preprocess_image(image_path):
     3. Convert to float32 raw array [0.0, 255.0]
     4. Expand dimensions -> (1, 224, 224, 3)
     """
+    # Open image using PIL (exactly like Keras load_img)
     img = Image.open(image_path).convert('RGB')
+    
+    # Resize with Bilinear/Bicubic matching Keras default
     img = img.resize((224, 224), Image.Resampling.BILINEAR)
+    
+    # Convert to NumPy float32
     img_array = np.array(img, dtype=np.float32)
+    
+    # Add batch dimension -> Shape: (1, 224, 224, 3)
     img_array = np.expand_dims(img_array, axis=0)
+    
     return img_array
 
 @app.route('/', methods=['GET'])
 def index():
-    return jsonify({
-        'status': 'online',
-        'model_loaded': session is not None,
-        'message': 'Rice Disease Detection API is running!'
-    }), 200
+    try:
+        return render_template('index.html')
+    except Exception:
+        # Kama index.html haipo au inatumiwa kama API tu
+        return jsonify({
+            'status': 'online',
+            'model_loaded': session is not None,
+            'message': 'Rice Disease Detection API is running!'
+        }), 200
 
-# Ping Endpoint kwa ajili ya UptimeRobot
+# Endpoint ya kuzuia server isilale (Tumia hii kwenye UptimeRobot au Cron Job)
 @app.route('/ping', methods=['GET'])
 def ping():
     return jsonify({
         'status': 'alive',
-        'model_loaded': session is not None
+        'model_loaded': session is not None,
+        'message': 'Server active'
     }), 200
 
 @app.route('/predict', methods=['POST'])
@@ -92,42 +90,39 @@ def predict():
         return jsonify({'error': 'No file selected'}), 400
 
     try:
-        if session is None:
-            return jsonify({'error': 'ONNX Model session is not loaded'}), 500
-
-        # Save uploaded file (Muundo wako wa local uliokuwa unafanya kazi)
+        # Save uploaded file
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
         file.save(filepath)
 
-        # Preprocess Image kutoka kwenye filepath
+        if session is None:
+            return jsonify({'error': 'ONNX Model session is not loaded'}), 500
+
+        # Preprocess Image using PIL
         processed_img = preprocess_image(filepath)
 
         # Run ONNX Inference
         outputs = session.run([output_name], {input_name: processed_img})
-        raw_predictions = outputs[0][0]
+        predictions = outputs[0][0]
 
-        # Tumia Softmax kama model haina Softmax layer ndani yake
-        probabilities = softmax(raw_predictions)
-
-        # Get class index na confidence score halisi
-        predicted_class_idx = int(np.argmax(probabilities))
+        # Get class index and confidence score
+        predicted_class_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[predicted_class_idx]
-        confidence = float(probabilities[predicted_class_idx]) * 100
+        confidence = float(predictions[predicted_class_idx]) * 100
 
-        # Futa picha baada ya kupredict ili kuzuia kujaza diski ya Render
+        # Futa fayili iliyohifadhiwa ili kuzuia diski ya Render kujaa
         if os.path.exists(filepath):
             os.remove(filepath)
 
         return jsonify({
-            'success': True,
             'class': predicted_class,
             'confidence': f"{confidence:.2f}%",
-            'confidence_raw': float(probabilities[predicted_class_idx])
-        }), 200
+            'image_path': f"/static/uploads/{file.filename}"
+        })
 
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
+    # Usanidi unaotakiwa na Render ili kupokea requests za mtandaoni
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
